@@ -1,0 +1,72 @@
+import os
+import json
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# --- Setup ---
+load_dotenv(override=True)
+
+# Initialize Clients
+ollama_client = OpenAI(
+    base_url=f"{os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434').rstrip('/')}/v1",
+    api_key="ollama",
+)
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-nano")
+
+def run_conversation_loop(client, model_name, label):
+    print(f"\n{'='*20} RUNNING {label} ({model_name}) {'='*20}")
+    
+    # Initialize persistent history
+    messages = [{"role": "system", "content": "You are a helpful IT professor."}]
+    
+    # Turn 1: Model generates a question
+    messages.append({"role": "user", "content": "Generate one strong interview question about Python Decorators. Return only the question."})
+    res1 = client.chat.completions.create(model=model_name, messages=messages)
+    ans1 = res1.choices[0].message.content
+    messages.append({"role": "assistant", "content": ans1})
+    print(f"Turn 1 (Question): {ans1}")
+
+    # Turn 2: Model answers its own question
+    messages.append({"role": "user", "content": "Answer that question concisely for a beginner."})
+    res2 = client.chat.completions.create(model=model_name, messages=messages)
+    ans2 = res2.choices[0].message.content
+    messages.append({"role": "assistant", "content": ans2})
+    print(f"\nTurn 2 (Answer): {ans2}")
+
+    # Turn 3: Model proposes follow-up
+    messages.append({"role": "user", "content": "Propose one interesting follow-up question."})
+    res3 = client.chat.completions.create(model=model_name, messages=messages)
+    ans3 = res3.choices[0].message.content
+    messages.append({"role": "assistant", "content": ans3})
+    print(f"\nTurn 3 (Follow-up): {ans3}")
+
+    # Turn 4 & 5: Extended loop
+    messages.append({"role": "user", "content": "Explain the answer to that follow-up using a real-world analogy."})
+    res4 = client.chat.completions.create(model=model_name, messages=messages)
+    ans4 = res4.choices[0].message.content
+    messages.append({"role": "assistant", "content": ans4})
+    print(f"\nTurn 4 (Analogy): {ans4}")
+
+    messages.append({"role": "user", "content": "Summarize our whole conversation in 2 sentences."})
+    res5 = client.chat.completions.create(model=model_name, messages=messages)
+    ans5 = res5.choices[0].message.content
+    print(f"\nTurn 5 (Summary): {ans5}")
+
+    # --- Exercise 3: Context Removal Comparison ---
+    print(f"\n--- Context Comparison for {label} ---")
+    no_context_prompt = "What was the very first question you generated in Turn 1?"
+    
+    # Attempt WITH full history
+    with_history = client.chat.completions.create(model=model_name, messages=messages + [{"role": "user", "content": no_context_prompt}])
+    print(f"With Context: {with_history.choices[0].message.content[:100]}...")
+    
+    # Attempt WITHOUT history (just the user prompt)
+    no_history = client.chat.completions.create(model=model_name, messages=[{"role": "user", "content": no_context_prompt}])
+    print(f"Without Context: {no_history.choices[0].message.content}")
+
+# Run for both
+run_conversation_loop(ollama_client, OLLAMA_MODEL, "OLLAMA")
+run_conversation_loop(openai_client, OPENAI_MODEL, "OPENAI")
