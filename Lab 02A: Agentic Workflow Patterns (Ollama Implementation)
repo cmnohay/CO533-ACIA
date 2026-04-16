@@ -1,0 +1,530 @@
+#=====================================================================================exercise-1====================================================================================#
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# --- Setup ---
+load_dotenv(override=True)
+client = OpenAI(
+    base_url=f"{os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434').rstrip('/')}/v1",
+    api_key="ollama",
+)
+MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+
+def chat(messages: list[dict]):
+    response = client.chat.completions.create(model=MODEL, messages=messages, temperature=0.1)
+    return response.choices[0].message.content
+
+TOPIC = "Why vector databases matter for RAG applications"
+
+# --- Exercise 1: Prompt Chaining with Retry + Gate ---
+
+outline = ""
+success = False
+max_retries = 2
+
+print(f"Using Model: {MODEL}")
+print("--- Starting Pattern 1: Prompt Chaining (with Gate) ---")
+
+for attempt in range(max_retries + 1):
+    print(f"\n[Attempt {attempt + 1}] Generating Outline...")
+    
+    outline = chat([
+        {"role": "system", "content": "You are a technical strategist. Output exactly 3 numbered sections (1., 2., 3.) with titles only. No intro/outro."},
+        {"role": "user", "content": f"Topic: {TOPIC}"},
+    ])
+    
+    # --- The Gate: Enforce strict format ---
+    has_1 = "1." in outline
+    has_2 = "2." in outline
+    has_3 = "3." in outline
+    gate_pass = has_1 and has_2 and has_3 and len(outline) > 30
+
+    if gate_pass:
+        print(f"✅ Gate Passed on attempt {attempt + 1}!")
+        success = True
+        break
+    else:
+        print(f"❌ Gate Failed: Outline format was incorrect.")
+
+if not success:
+    print("Stopping: Could not generate a valid outline.")
+else:
+    # --- Step 2: Draft (Only runs if Gate passed) ---
+    print("\n[Step 2] Expanding into Draft...")
+    draft = chat([
+        {"role": "system", "content": "You are a senior technical writer. Write a 100-word draft based on the outline."},
+        {"role": "user", "content": f"Outline:\n{outline}"},
+    ])
+    print(f"DONE.\nDraft:\n{draft}")
+
+    # --- Step 3: Polish ---
+    print("\n[Step 3] Polishing...")
+    polished = chat([
+        {"role": "system", "content": "Simplify this for a non-technical audience. Keep it under 50 words."},
+        {"role": "user", "content": draft},
+    ])
+    print(f"DONE.\nFinal Polished Result:\n{polished}")
+
+print("\n--- Pipeline Complete ---")
+
+#=====================================================================================exercise-2====================================================================================#
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# --- Setup ---
+load_dotenv(override=True)
+client = OpenAI(
+    base_url=f"{os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434').rstrip('/')}/v1",
+    api_key="ollama",
+)
+MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+
+def chat(messages: list[dict], temperature: float = 0.3):
+    response = client.chat.completions.create(model=MODEL, messages=messages, temperature=temperature)
+    return response.choices[0].message.content
+
+print(f"Using Model: {MODEL}")
+print("--- Starting Pattern 2: Routing (with Feature Request) ---\n")
+
+# --- Exercise 2 Logic ---
+
+# 1. Define the specialist prompts, adding the 4th category
+SPECIALIST_PROMPTS = {
+    "billing": "You are a billing support specialist. Be empathetic and solution-focused. Keep it under 50 words.",
+    "technical": "You are a senior technical support engineer. Give precise, step-by-step answers. Keep it under 50 words.",
+    "general": "You are a friendly customer success agent. Be warm and concise. Keep it under 50 words.",
+    "feature_request": "You are a Product Manager. Acknowledge the user's idea, explain that you will add it to the product roadmap review, and thank them for the feedback. Keep it under 50 words."
+}
+
+def classify_query(user_query: str) -> str:
+    """Return one of: billing | technical | general | feature_request"""
+    # Temperature 0 is crucial here so the model doesn't get creative with the classification
+    result = chat(
+        [
+            {"role": "system", "content": (
+                "Classify the following customer query into exactly one category: "
+                "billing, technical, general, or feature_request. "
+                "Reply with the single word only. Do not add punctuation."
+            )},
+            {"role": "user", "content": user_query},
+        ],
+        temperature=0.0, 
+    ).strip().lower()
+    
+    # Clean up the output in case the model adds extra words
+    for key in SPECIALIST_PROMPTS:
+        if key in result:
+            return key
+    return "general" # Fallback if the model gets confused
+
+def routed_response(user_query: str) -> tuple[str, str]:
+    print(f"Processing Query: '{user_query}'")
+    
+    # Step 1: Route it
+    category = classify_query(user_query)
+    print(f"  -> Routed to: [{category.upper()}]")
+    
+    # Step 2: Answer it using the specific prompt
+    system_prompt = SPECIALIST_PROMPTS[category]
+    answer = chat([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_query},
+    ])
+    return category, answer
+
+# --- Test Queries ---
+# The instructions require testing at least two "feature_request" inputs
+queries = [
+    "I was charged twice on my last invoice.",                                 # Should be Billing
+    "Can you add a dark mode to the dashboard? It hurts my eyes at night.",    # Feature Request 1
+    "It would be great if the app could export reports to PDF, not just CSV.", # Feature Request 2
+]
+
+for q in queries:
+    category, answer = routed_response(q)
+    print(f"  -> Response:\n{answer}\n{'-'*50}\n")
+
+print("--- Routing Complete ---")
+
+#=====================================================================================exercise-3====================================================================================#
+import os
+from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# --- Setup ---
+load_dotenv(override=True)
+client = OpenAI(
+    base_url=f"{os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434').rstrip('/')}/v1",
+    api_key="ollama",
+)
+MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+
+def chat(messages: list[dict], temperature: float = 0.7):
+    response = client.chat.completions.create(model=MODEL, messages=messages, temperature=temperature)
+    return response.choices[0].message.content
+
+print(f"Using Model: {MODEL}")
+print("--- Starting Pattern 3: Parallelization (Guardrail) ---\n")
+
+# --- Exercise 3 Logic ---
+
+# Let's test it with a potentially unsafe prompt
+USER_PROMPT = "What is database index"
+print(f"User Query: '{USER_PROMPT}'\n")
+
+def worker_a_generate(query: str) -> str:
+    print("  [Worker A] Started generating answer...")
+    answer = chat([
+        {"role": "system", "content": "You are a helpful assistant. Keep your answer under 50 words."},
+        {"role": "user", "content": query}
+    ])
+    print("  [Worker A] Finished generating answer.")
+    return answer
+
+def worker_b_check_safety(query: str) -> str:
+    print("  [Worker B] Started checking safety...")
+    # Temperature 0 is important for classification tasks
+    safety_status = chat([
+        {"role": "system", "content": "You are a strict safety monitor. Is the following request asking for help with illegal hacking, bypassing security, or malicious activity? Reply ONLY with the word 'SAFE' or 'UNSAFE'."},
+        {"role": "user", "content": query}
+    ], temperature=0.0).strip().upper()
+    print("  [Worker B] Finished checking safety.")
+    return safety_status
+
+# Execute both workers at the exact same time
+with ThreadPoolExecutor(max_workers=2) as pool:
+    future_a = pool.submit(worker_a_generate, USER_PROMPT)
+    future_b = pool.submit(worker_b_check_safety, USER_PROMPT)
+
+    # Wait for both to finish and get their results
+    answer_result = future_a.result()
+    safety_result = future_b.result()
+
+print("\n" + "="*50)
+print(f"Guardrail Assessment: [{safety_result}]")
+
+# Final Aggregation Logic
+if "UNSAFE" in safety_result:
+    print("🚨 GUARDRAIL BLOCKED: The request was flagged as unsafe/inappropriate. Worker A's output has been hidden.")
+else:
+    print(f"✅ Safe to display. Final Response:\n{answer_result}")
+print("="*50 + "\n")
+
+print("--- Parallelization Complete ---")
+
+#=====================================================================================exercise-4====================================================================================#
+import os
+import json
+from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# --- Setup ---
+load_dotenv(override=True)
+client = OpenAI(
+    base_url=f"{os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434').rstrip('/')}/v1",
+    api_key="ollama",
+)
+MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+
+def chat(messages: list[dict], temperature: float = 0.3):
+    response = client.chat.completions.create(model=MODEL, messages=messages, temperature=temperature)
+    return response.choices[0].message.content
+
+print(f"Using Model: {MODEL}")
+print("--- Starting Pattern 4: Orchestrator-Workers (Dynamic Depth) ---\n")
+
+RESEARCH_GOAL = "Explain how Retrieval-Augmented Generation (RAG) works."
+all_qa_history = ""
+
+# --- Helper to clean JSON from Markdown blocks ---
+def parse_json_safely(raw_str):
+    clean = raw_str.strip().replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(clean)
+    except:
+        return None
+
+def worker_answer(question: str) -> str:
+    print(f"    [Worker] Researching: '{question}'...")
+    return chat([
+        {"role": "system", "content": "You are a concise expert. Answer in 2 sentences max."},
+        {"role": "user", "content": question},
+    ])
+
+# ==========================================
+# ROUND 1: Initial Sub-tasks
+# ==========================================
+print("[Round 1] Orchestrator breaking down the goal...")
+plan_raw = chat(
+    [
+        {"role": "system", "content": "You are an orchestrator. Output a JSON array of exactly 2 focused sub-questions to investigate the user's goal. ONLY return valid JSON array of strings."},
+        {"role": "user", "content": RESEARCH_GOAL},
+    ],
+    temperature=0,
+)
+
+subtasks_r1 = parse_json_safely(plan_raw) or ["What is RAG?", "How does RAG improve AI?"]
+
+# Run Round 1 Workers in Parallel
+with ThreadPoolExecutor(max_workers=2) as pool:
+    results_r1 = list(pool.map(worker_answer, subtasks_r1))
+
+for q, a in zip(subtasks_r1, results_r1):
+    all_qa_history += f"Q: {q}\nA: {a}\n\n"
+
+# ==========================================
+# DYNAMIC DEPTH CHECK (The new requirement)
+# ==========================================
+print("\n[Decision] Orchestrator deciding if deeper research is needed...")
+decision_raw = chat(
+    [
+        {"role": "system", "content": (
+            "Read the Q&A history. Do we need 1 more deeper, advanced sub-question to fully explain the topic? "
+            "Output JSON ONLY: {\"needs_more\": true/false, \"new_question\": \"<string>\"}"
+        )},
+        {"role": "user", "content": f"Goal: {RESEARCH_GOAL}\n\nCurrent History:\n{all_qa_history}"},
+    ],
+    temperature=0,
+)
+
+decision = parse_json_safely(decision_raw) or {"needs_more": False}
+
+# ==========================================
+# ROUND 2 (Conditional)
+# ==========================================
+if decision.get("needs_more") and decision.get("new_question"):
+    new_q = decision["new_question"]
+    print(f"[Round 2] YES. Deeper question triggered:\n    -> '{new_q}'")
+    
+    new_a = worker_answer(new_q)
+    all_qa_history += f"Q: {new_q}\nA: {new_a}\n\n"
+else:
+    print("[Round 2] NO. Current information is sufficient.")
+
+# ==========================================
+# FINAL SYNTHESIS
+# ==========================================
+print("\n[Final] Synthesizing report...")
+final_report = chat([
+    {"role": "system", "content": "Synthesize the provided Q&A pairs into a smooth 100-word technical summary."},
+    {"role": "user", "content": f"Goal: {RESEARCH_GOAL}\n\nData:\n{all_qa_history}"},
+])
+
+print("\n" + "="*50)
+print(f"FINAL SYNTHESIZED REPORT:\n\n{final_report}")
+print("="*50 + "\n")
+
+#=====================================================================================exercise-5====================================================================================#
+import os
+import json
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# --- Setup ---
+load_dotenv(override=True)
+client = OpenAI(
+    base_url=f"{os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434').rstrip('/')}/v1",
+    api_key="ollama",
+)
+MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+
+def chat(messages: list[dict], temperature: float = 0.3):
+    response = client.chat.completions.create(model=MODEL, messages=messages, temperature=temperature)
+    return response.choices[0].message.content
+
+print(f"Using Model: {MODEL}")
+print("--- Starting Pattern 5: Evaluator-Optimizer (Custom Rubric) ---\n")
+
+# --- Exercise 5 Logic ---
+
+WRITING_TASK = "Explain what an 'API' is using a restaurant analogy. Target audience: Non-technical beginners."
+MAX_ITERATIONS = 3
+
+def generate_draft(task: str, feedback: str = None) -> str:
+    print("  [Writer] Writing draft...")
+    messages = [
+        {"role": "system", "content": "You are a technical educator. Write clearly and concisely (max 50 words)."},
+        {"role": "user", "content": task},
+    ]
+    if feedback:
+        messages.append({"role": "user", "content": f"Improve your previous response based on this strict feedback:\n{feedback}"})
+    
+    return chat(messages, temperature=0.5)
+
+def evaluate_draft(task: str, draft: str) -> dict:
+    print("  [Editor] Evaluating draft...")
+    prompt = (
+        "You are a strict editor. Evaluate the draft on three axes (1-10): "
+        "clarity (is it easy to understand?), accuracy (is the technical analogy correct?), and brevity (is it short?). "
+        "Return ONLY valid JSON in this format: {\"clarity\": <int>, \"accuracy\": <int>, \"brevity\": <int>, \"feedback\": \"<string>\"}"
+    )
+    
+    raw_eval = chat([
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": f"Task: {task}\n\nDraft to evaluate:\n{draft}"}
+    ], temperature=0.0)
+    
+    # Clean up markdown JSON formatting
+    clean_eval = raw_eval.strip().replace("```json", "").replace("```", "").strip()
+    
+    try:
+        return json.loads(clean_eval)
+    except Exception as e:
+        print(f"  [Error] Failed to parse JSON: {clean_eval}")
+        return {"clarity": 0, "accuracy": 0, "brevity": 0, "feedback": "System error: Failed to parse evaluation."}
+
+# ==========================================
+# THE OPTIMIZATION LOOP
+# ==========================================
+feedback_history = None
+
+for iteration in range(1, MAX_ITERATIONS + 1):
+    print(f"\n--- Iteration {iteration} ---")
+    
+    # 1. Generate
+    current_draft = generate_draft(WRITING_TASK, feedback_history)
+    print(f"\nDraft:\n{current_draft}\n")
+    
+    # 2. Evaluate
+    evaluation = evaluate_draft(WRITING_TASK, current_draft)
+    c, a, b = evaluation.get('clarity', 0), evaluation.get('accuracy', 0), evaluation.get('brevity', 0)
+    
+    print(f"Scores -> Clarity: {c}/10 | Accuracy: {a}/10 | Brevity: {b}/10")
+    print(f"Feedback: {evaluation.get('feedback', 'None')}")
+    
+    # 3. Check Condition (All >= 7)
+    if c >= 7 and a >= 7 and b >= 7:
+        print(f"\n✅ SUCCESS: All targets met on Iteration {iteration}!")
+        print("="*50)
+        print(f"FINAL APPROVED DRAFT:\n{current_draft}")
+        print("="*50)
+        break
+    else:
+        print("\n⚠️ Targets not met. Passing feedback to Writer for next iteration...")
+        feedback_history = evaluation.get('feedback')
+
+else:
+    print(f"\n❌ Reached max iterations ({MAX_ITERATIONS}) without meeting all criteria.")
+    print(f"Best effort:\n{current_draft}")
+
+#=====================================================================================exercise-6====================================================================================#
+import os
+import json
+from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# --- Setup ---
+load_dotenv(override=True)
+client = OpenAI(
+    base_url=f"{os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434').rstrip('/')}/v1",
+    api_key="ollama",
+)
+MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+
+def chat(messages: list[dict], temperature: float = 0.3):
+    response = client.chat.completions.create(model=MODEL, messages=messages, temperature=temperature)
+    return response.choices[0].message.content
+
+def parse_json_safely(raw_str):
+    clean = raw_str.strip().replace("```json", "").replace("```", "").strip()
+    try: 
+        return json.loads(clean)
+    except: 
+        return None
+
+print(f"Using Model: {MODEL}")
+print("--- Starting STRETCH GOAL: The Master Pipeline ---\n")
+
+TOPIC = "Best practices for implementing RAG in enterprise apps"
+print(f"Target Topic: '{TOPIC}'\n")
+
+# ==========================================
+# PHASE 1: ROUTING
+# ==========================================
+print("[Phase 1] Routing to the correct department...")
+route_raw = chat([
+    {"role": "system", "content": "Classify the topic as either 'technical' or 'business'. Reply with ONE word only."},
+    {"role": "user", "content": TOPIC}
+], temperature=0.0).strip().lower()
+
+category = "business" if "business" in route_raw else "technical"
+print(f"  -> Routed to: {category.upper()} Pipeline\n")
+
+# ==========================================
+# PHASE 2: ORCHESTRATOR-WORKERS
+# ==========================================
+print("[Phase 2] Orchestrator planning research...")
+plan_raw = chat([
+    {"role": "system", "content": f"You are a {category} research director. Output a JSON array of exactly 2 strings. ONLY return an array of strings. Example: [\"Q1\", \"Q2\"]"},
+    {"role": "user", "content": TOPIC}
+])
+
+subtasks = parse_json_safely(plan_raw)
+if not subtasks: 
+    subtasks = ["What is the main benefit?", "What are the key challenges?"] 
+
+def worker_research(q):
+    # THE FIX: Force the question into a string to prevent 400 errors
+    safe_q_string = str(q)
+    print(f"    [Worker] Researching: {safe_q_string[:60]}...")
+    
+    return chat([
+        {"role": "system", "content": f"You are a {category} expert. Answer concisely in 2 sentences."},
+        {"role": "user", "content": safe_q_string}
+    ])
+
+# Run workers in parallel
+with ThreadPoolExecutor(max_workers=2) as pool:
+    results = list(pool.map(worker_research, subtasks))
+
+research_data = "\n\n".join([f"Q: {q}\nA: {a}" for q, a in zip(subtasks, results)])
+print("  -> Research complete.\n")
+
+# ==========================================
+# PHASE 3: EVALUATOR-OPTIMIZER
+# ==========================================
+print("[Phase 3] Evaluator-Optimizer Drafting & Refining...")
+
+def generate_draft(feedback=None):
+    print("    [Writer] Generating draft...")
+    msg = f"Write a 75-word {category} summary based on this data:\n{research_data}"
+    if feedback:
+        msg += f"\n\nImprove the draft based on this strict feedback: {feedback}"
+    return chat([{"role": "user", "content": msg}], temperature=0.5)
+
+def evaluate(draft):
+    print("    [Editor] Grading draft...")
+    raw = chat([
+        {"role": "system", "content": "Score this draft out of 10 for clarity and professional tone. Return ONLY JSON: {\"score\": <int>, \"feedback\": \"<string>\"}"},
+        {"role": "user", "content": draft}
+    ], temperature=0.0)
+    
+    parsed = parse_json_safely(raw)
+    if parsed: return parsed
+    return {"score": 10, "feedback": ""} 
+
+current_draft = generate_draft()
+
+for i in range(1, 3): 
+    eval_result = evaluate(current_draft)
+    score = eval_result.get('score', 0)
+    print(f"    -> Iteration {i} Score: {score}/10")
+    
+    if score >= 8:
+        print("    -> Quality threshold met!")
+        break
+    else:
+        print(f"    -> Refining based on Editor feedback: {eval_result.get('feedback')}")
+        current_draft = generate_draft(eval_result.get('feedback'))
+
+# ==========================================
+# FINAL OUTPUT
+# ==========================================
+print("\n" + "="*50)
+print(f"FINAL MASTERPIECE ({category.upper()}):\n\n{current_draft}")
+print("="*50 + "\n")
